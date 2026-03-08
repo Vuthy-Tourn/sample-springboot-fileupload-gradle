@@ -33,7 +33,7 @@ jobs:
         uses: docker/setup-buildx-action@v3   # Enables advanced build features & caching
 
       - name: Login to DockerHub
-        uses: docker/login-action@v3   # Safer than raw CLI login
+        uses: docker/login-action@v3 
         with:
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
