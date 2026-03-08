@@ -1,94 +1,84 @@
+name: CI/CD Pipeline - Build, Push & Update Helm
+
 on:
   push:
-    branches: [ "master" ]
+    tags:
+      - "v*.*.*"   # Triggers on semantic version tags like v1.0.0, v0.1.3, etc.
 
 env:
-  #NEXUS_REGISTRY: registry-new.devnerd.store # nexus repo for storing docker image 
   IMAGE_NAME: spring-fileupload-itp
-  # TAG: "v0.1.0" # version dynamic 
-  HELM_REPO: sexymanalive/argocd-gitops-itp.git
-  
+  HELM_REPO: vuthytourn/argocd-gitops-itp.git
+
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest 
+    runs-on: ubuntu-latest
+    environment: DOCKER_ENV
+    outputs:
+      image_tag: ${{ steps.extract_tag.outputs.tag }}   # Pass tag to next job cleanly
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4   # Updated to v4
+
+      - name: Extract tag from ref
+        id: extract_tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"   # Strips 'refs/tags/' → gives 'v1.0.0'
+          echo "tag=$TAG" >> $GITHUB_OUTPUT   # Expose to other jobs via outputs
+
+      - name: Show tag value
+        run: echo "Building image with tag → ${{ steps.extract_tag.outputs.tag }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3   # Enables advanced build features & caching
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3   # Safer than raw CLI login
+        with:
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dev.Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.extract_tag.outputs.tag }}
+            ${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha   # GitHub Actions cache for faster builds
+          cache-to: type=gha,mode=max
+
+  update-helm-repo:
+    needs: build-and-push
+    runs-on: ubuntu-latest
     environment: DOCKER_ENV
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Use with SHA
-      run: |
-        echo "TAG=${GITHUB_SHA::8}" >> $GITHUB_ENV
-    - name: Show the new tags value
-      run: |
-        echo "Tag value is: ${{ env.TAG }}"
-
-
-    - name: Login to Dockerhub 
-      run: |
-        echo "${{ secrets.PASSWORD }}" | docker login -u ${{ secrets.USERNAME }} --password-stdin
-
-    # - name: Build Docker image
-    #   run: docker build -t ${{ env.NEXUS_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.TAG }} .
- 
-    - name: Build the docker image and push it to repo 
-      uses: docker/build-push-action@v4
-      with: 
-        context: .
-        file: dev.Dockerfile  
-        push: true 
-        build-args: |
-          APP_PORT=${{ env.APP_PORT }}
-        tags: |
-          ${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
-    - name: Push Docker image
-      run: |
-        docker push ${{ secrets.username }}/${{ env.IMAGE_NAME }}:${{ env.TAG }}
-
-    - name: Logout from Nexus Registry 
-      if: always() # this ensure the logout runs even if the previous step fails. 
-      run: |
-        docker logout 
-  update-helm-repo: 
-    needs: build-and-push
-    runs-on: ubuntu-latest 
-    environment: DOCKER_ENV
-    steps:  
-      - name: Installing yq for easily work with the values file 
+      - name: Install yq
         run: |
-          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
 
-      - name: Use with SHA
-        run: |
-          echo "TAG=${GITHUB_SHA::8}" >> $GITHUB_ENV
-      - name: Showing the tags value 
-        run: | 
-          echo "This is the value of tag : ${{ env.TAG }}"
       - name: Checkout Helm repository
         run: |
-          git clone https://${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }} helm-repo
+          git clone https://x-access-token:${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }} helm-repo   # x-access-token is the correct format for PAT auth
+
+      - name: Update Helm values.yaml
         env:
-          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
-      - name: Update Helm chart
-        env: 
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          TAG: ${{ env.TAG }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}  # ← pull from build-and-push
         run: |
-          
           cd helm-repo
+          yq -i ".image.repository=\"${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}\"" springboot-chart/values-prod.yaml
+          yq -i ".image.tag=\"${{ IMAGE_TAG }}\"" springboot-chart/values-prod.yaml
 
-          
-          yq -i ".image.repository=\"${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}\"" springboot-chart/values.yaml
-          yq -i ".image.tag=\"${{ env.TAG }}\"" springboot-chart/values.yaml
+          git config --global user.email "ci-bot@github-actions.local"
+          git config --global user.name "GitHub Actions Bot"
+          git add springboot-chart/values-prod.yaml   # Stage only the file you changed, not everything
+          git diff --cached --quiet || git commit -m "ci: update ${{ env.IMAGE_NAME }} image tag to ${{ IMAGE_TAG }}"   # Skip commit if no changes
+          git push https://x-access-token:${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }}
 
-          git config --global user.email "dummy@example.com"
-          git config --global user.name "dummy_user"
-          git add .
-          git commit -m "Update image to ${{ env.IMAGE_NAME }}:${{ env.TAG }}"
-          git push https://${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }}
-      - name: Clean up
-        run: |
-          rm -rf helm-repo
-
+      - name: Clean up cloned repo
+        if: always()
+        run: rm -rf helm-repo
