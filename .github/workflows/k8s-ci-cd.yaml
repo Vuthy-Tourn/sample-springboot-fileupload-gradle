@@ -71,12 +71,12 @@ jobs:
         run: |
           cd helm-repo
           yq -i ".image.repository=\"${{ secrets.USERNAME }}/${{ env.IMAGE_NAME }}\"" springboot-chart/values-prod.yaml
-          yq -i ".image.tag=\"${{ IMAGE_TAG }}\"" springboot-chart/values-prod.yaml
+          yq -i ".image.tag=\"${{ env.IMAGE_TAG }}\"" springboot-chart/values-prod.yaml
 
           git config --global user.email "ci-bot@github-actions.local"
           git config --global user.name "GitHub Actions Bot"
           git add springboot-chart/values-prod.yaml   # Stage only the file you changed, not everything
-          git diff --cached --quiet || git commit -m "ci: update ${{ env.IMAGE_NAME }} image tag to ${{ IMAGE_TAG }}"   # Skip commit if no changes
+          git diff --cached --quiet || git commit -m "ci: update ${{ env.IMAGE_NAME }} image tag to ${{ env.IMAGE_TAG }}"   # Skip commit if no changes
           git push https://x-access-token:${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }}
 
       - name: Clean up cloned repo
