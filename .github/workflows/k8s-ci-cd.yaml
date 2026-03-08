@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4   # Updated to v4
+        uses: actions/checkout@v4 
 
       - name: Extract tag from ref
         id: extract_tag
@@ -54,7 +54,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: DOCKER_ENV
-    
+
     steps:
       - name: Install yq
         run: |
